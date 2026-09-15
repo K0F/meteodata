@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
-"""Plot weather history from data/meteo.csv into plots/meteo_history.png."""
+"""Plot weather history from data/meteo.csv into plots/meteo_history.png.
+
+Per-source series:
+- sensor: EMOS-E6016 RTL-SDR readings (grey) + daily mean (blue)
+- era5:  Open-Meteo ERA5 reanalysis hourly (orange, fills the gaps)
+- chmi:  CHMI Praha-Karlov daily (red markers, fills the gaps)
+"""
 
 import csv
+import math
 import os
 from collections import defaultdict
 from datetime import datetime
@@ -16,21 +23,13 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CSV = os.path.join(BASE, "data", "meteo.csv")
 OUT = os.path.join(BASE, "plots", "meteo_history.png")
 
-
-def load():
-    times, temp, hum, wind, direction = [], [], [], [], []
-    with open(CSV) as fh:
-        for row in csv.DictReader(fh):
-            try:
-                t = datetime.strptime(row["time"], "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                continue
-            times.append(t)
-            temp.append(_num(row["temperature_C"]))
-            hum.append(_num(row["humidity"]))
-            wind.append(_num(row["wind_avg_m_s"]))
-            direction.append(_num(row["wind_dir_deg"]))
-    return times, temp, hum, wind, direction
+VARS = ["temperature_C", "humidity", "wind_avg_m_s", "wind_dir_deg"]
+PANELS = [
+    ("Temperature", "°C"),
+    ("Humidity", "%"),
+    ("Wind speed", "m/s"),
+    ("Wind direction", "deg"),
+]
 
 
 def _num(v):
@@ -40,11 +39,30 @@ def _num(v):
         return float("nan")
 
 
+def load():
+    by_source = {}
+    for src in ("sensor", "era5", "chmi"):
+        by_source[src] = {v: ([], []) for v in VARS}
+    with open(CSV) as fh:
+        for row in csv.DictReader(fh):
+            src = row.get("source", "sensor")
+            try:
+                t = datetime.strptime(row["time"], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if src not in by_source:
+                continue
+            for v in VARS:
+                by_source[src][v][0].append(t)
+                by_source[src][v][1].append(_num(row.get(v, "")))
+    return by_source
+
+
 def _daily_mean(times, series):
+    if not times:
+        return [], []
     by_day = defaultdict(list)
     for t, v in zip(times, series):
-        import math
-
         if not math.isnan(v):
             by_day[t.date()].append(v)
     days = sorted(by_day)
@@ -54,26 +72,54 @@ def _daily_mean(times, series):
 
 
 def main():
-    times, temp, hum, wind, direction = load()
-    print("{} points loaded from {}".format(len(times), CSV))
+    data = load()
+    n = sum(len(data[src]["temperature_C"][0]) for src in data)
+    print("{} points loaded from {}".format(n, CSV))
 
-    fig, axes = plt.subplots(4, 1, figsize=(14, 14), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(15, 14), sharex=True)
     fig.suptitle(
-        "Meteostation EMOS-E6016 / Observator Soběslavská, Praha 3", fontsize=14
+        "Meteostation EMOS-E6016 / Observator Soběslavská, Praha 3\n"
+        "EMOS sensor  (2023-06-25 → 2026-09-15) · ERA5 reanalysis · CHMI Praha-Karlov (daily)",
+        fontsize=13,
     )
 
-    panels = [
-        (axes[0], temp, "Temperature (°C)", "°C"),
-        (axes[1], hum, "Humidity (%)", "%"),
-        (axes[2], wind, "Wind speed (m/s)", "m/s"),
-        (axes[3], direction, "Wind direction (deg)", "deg"),
-    ]
+    for i, (title, unit) in enumerate(PANELS):
+        ax = axes[i]
+        var = VARS[i]
 
-    for ax, series, title, _unit in panels:
-        ax.plot(times, series, color="0.65", linewidth=0.4, alpha=0.6)
-        dts, means = _daily_mean(times, series)
-        ax.plot(dts, means, color="#0b5394", linewidth=1.4)
-        ax.set_ylabel(_unit, fontsize=10)
+        st, sv = data["sensor"][var]
+        ax.plot(st, sv, color="0.65", linewidth=0.4, alpha=0.6, label="_nolabel_")
+        dts, means = _daily_mean(st, sv)
+        ax.plot(dts, means, color="#0b5394", linewidth=1.4, label="EMOS daily mean")
+
+        if var == "wind_dir_deg":
+            et, ev = data["era5"][var]
+            ax.plot(
+                et, ev, color="#e67e22", linewidth=0.7, alpha=0.9, label="ERA5 hourly"
+            )
+        else:
+            et, ev = data["era5"][var]
+            ax.plot(et, ev, color="#e67e22", linewidth=1.0, label="ERA5 hourly")
+
+        ct, cv = data["chmi"][var]
+        if var == "wind_dir_deg":
+            # keep only valid angles, CHMI daily has no wind direction
+            pairs = [(t, v) for t, v in zip(ct, cv) if not math.isnan(v)]
+            if pairs:
+                ct, cv = zip(*pairs)
+            else:
+                ct, cv = [], []
+        ax.plot(
+            ct,
+            cv,
+            color="#c0392b",
+            marker="o",
+            markersize=2,
+            linestyle="None",
+            label="CHMI Karlov daily",
+        )
+
+        ax.set_ylabel(unit, fontsize=10)
         ax.set_title(title, fontsize=11, loc="left")
         ax.grid(True, alpha=0.3)
 
@@ -81,7 +127,8 @@ def main():
     axes[3].xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
     fig.autofmt_xdate()
 
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    axes[0].legend(loc="upper left", fontsize=9, ncol=3)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     fig.savefig(OUT, dpi=140)
     print("saved {}".format(OUT))
