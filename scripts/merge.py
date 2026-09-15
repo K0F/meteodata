@@ -14,7 +14,13 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RAW_DIR = os.path.join(BASE, "data", "raw")
 OUT_CSV = os.path.join(BASE, "data", "meteo.csv")
 
-RAW_FILES = ["backup2.json", "weather_data_all.json", "backup.json", "graph.json"]
+RAW_FILES = [
+    "2023_graph.json",
+    "backup2.json",
+    "weather_data_all.json",
+    "backup.json",
+    "graph.json",
+]
 
 FIELDS = [
     "time",
